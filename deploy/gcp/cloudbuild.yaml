@@ -1,0 +1,25 @@
+# Cloud Build config for the chat-roulette container image.
+# Builds the repo-root context against cmd/chat-roulette/Dockerfile and pushes
+# the result to Artifact Registry. Run from the repo root via deploy.sh:
+#
+#   gcloud builds submit --config deploy/gcp/cloudbuild.yaml \
+#     --substitutions=_IMAGE=<host>/<repo>/chat-roulette:<sha>,_IMAGE_LATEST=<...>:latest .
+#
+# Building in Cloud Build (rather than local docker) guarantees a linux/amd64
+# image regardless of the operator's machine (e.g. Apple Silicon).
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file=cmd/chat-roulette/Dockerfile
+      - --tag=${_IMAGE}
+      - --tag=${_IMAGE_LATEST}
+      - .
+images:
+  - ${_IMAGE}
+  - ${_IMAGE_LATEST}
+options:
+  logging: CLOUD_LOGGING_ONLY
+substitutions:
+  _IMAGE: ""
+  _IMAGE_LATEST: ""

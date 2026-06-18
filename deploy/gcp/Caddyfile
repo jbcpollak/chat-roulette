@@ -1,0 +1,15 @@
+# Caddy reverse proxy. __DOMAIN__ and __ACME_EMAIL__ are substituted by deploy.sh
+# when the cloud-init user-data is rendered. Caddy automatically provisions and
+# renews a Let's Encrypt certificate for the domain (HTTP-01 / TLS-ALPN-01), so
+# ports 80 and 443 must be reachable and DNS must point at the VM's static IP.
+{
+	email __ACME_EMAIL__
+}
+
+__DOMAIN__ {
+	encode gzip
+	reverse_proxy chat-roulette:8080 {
+		health_uri /-/healthy
+		health_interval 30s
+	}
+}

@@ -5,3 +5,4 @@ notes/
 config.json
 fly.toml
 .lint-report.html
+deploy/gcp/deploy.env

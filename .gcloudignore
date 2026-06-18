@@ -1,0 +1,18 @@
+# Controls what `gcloud builds submit` uploads as the build context.
+#
+# Unlike gcloud's default behavior, we intentionally KEEP the .git directory so
+# the in-container `git rev-parse HEAD` in scripts/go.sh can stamp the version
+# into the binary (without it, `make go/build` fails with "not a git repository").
+#
+# We still exclude secrets and build artifacts that the auto-generated ignore
+# (derived from .gitignore) would have dropped — especially config.json, which
+# holds Slack/OIDC secrets and must never reach the builder or the image.
+
+.gcloudignore
+bin/
+cmd/bin/
+notes/
+.coverage.out
+config.json
+fly.toml
+.lint-report.html
