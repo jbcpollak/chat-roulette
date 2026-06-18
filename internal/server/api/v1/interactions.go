@@ -461,8 +461,15 @@ func (s *implServer) slackInteractionHandler(w http.ResponseWriter, r *http.Requ
 				}
 
 			case models.JobTypeGreetMember:
-				// Handle GREET_MEMBER button
-				if err := bot.HandleGreetMemberButton(r.Context(), s.GetSlackClient(), &interaction); err != nil {
+				// Handle GREET_MEMBER button. When the onboarding flow is disabled,
+				// enroll the member directly instead of opening the questionnaire modal.
+				var err error
+				if s.IsOnboardingFlowDisabled() {
+					err = bot.EnrollMemberWithoutOnboarding(r.Context(), s.GetHTTPClient(), s.GetDB(), &interaction)
+				} else {
+					err = bot.HandleGreetMemberButton(r.Context(), s.GetSlackClient(), &interaction)
+				}
+				if err != nil {
 					span.RecordError(err)
 					logger.Error("failed to handle greet member button", "error", err)
 					w.WriteHeader(http.StatusInternalServerError)

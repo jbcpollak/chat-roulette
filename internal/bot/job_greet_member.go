@@ -694,6 +694,16 @@ func RespondGreetMemberWebhook(ctx context.Context, client *http.Client, interac
 		return errors.Wrap(err, "failed to decode base64 string to privateMetadata")
 	}
 
+	return respondGreetMemberConfirmation(ctx, client, pm.ResponseURL, pm.Blocks, interaction.Team.ID, interaction.APIAppID)
+}
+
+// respondGreetMemberConfirmation overwrites the "Opt In" button in the original
+// GREET_MEMBER message with a confirmation that the member is now participating.
+// It is shared by the onboarding-modal path (RespondGreetMemberWebhook, which sources
+// the blocks/ResponseURL from private_metadata) and the skip-onboarding path
+// (EnrollMemberWithoutOnboarding, which sources them directly from the block_actions
+// interaction).
+func respondGreetMemberConfirmation(ctx context.Context, client *http.Client, responseURL string, blocks slack.Blocks, teamID, apiAppID string) error {
 	// Modify and append to the existing message
 	confirmationText := `*Thank you for choosing to participate in Chat Roulette!*`
 	sectionBlock := slack.NewSectionBlock(
@@ -702,7 +712,7 @@ func RespondGreetMemberWebhook(ctx context.Context, client *http.Client, interac
 		nil,
 	)
 
-	deepLink := generateAppHomeDeepLink(interaction.Team.ID, interaction.APIAppID)
+	deepLink := generateAppHomeDeepLink(teamID, apiAppID)
 
 	visitAppHomeText := fmt.Sprintf(":pushpin:  You can always visit me in <%s|App Home>", deepLink)
 
@@ -710,7 +720,7 @@ func RespondGreetMemberWebhook(ctx context.Context, client *http.Client, interac
 	contextBlock := slack.NewContextBlock("AppHome", element)
 
 	var message slack.Message
-	message.Blocks = pm.Blocks
+	message.Blocks = blocks
 
 	message = transformMessage(message, 6, sectionBlock, contextBlock)
 
@@ -720,8 +730,59 @@ func RespondGreetMemberWebhook(ctx context.Context, client *http.Client, interac
 	}
 
 	// Send HTTP response for the webhook
-	if err := slack.PostWebhookCustomHTTPContext(ctx, pm.ResponseURL, client, webhookMessage); err != nil {
+	if err := slack.PostWebhookCustomHTTPContext(ctx, responseURL, client, webhookMessage); err != nil {
 		return errors.Wrap(err, "failed to send Slack webhook")
+	}
+
+	return nil
+}
+
+// EnrollMemberWithoutOnboarding handles the GREET_MEMBER "Opt In" button click when
+// the onboarding flow is disabled (DISABLE_ONBOARDING_FLOW). Instead of opening the
+// onboarding questionnaire modal, it marks the member active with default settings and
+// queues a match — mirroring the final step of the normal onboarding flow
+// (the "onboarding-calendly" view submission). Matching only relies on gender,
+// gender preference, and connection mode, all of which have safe DB defaults.
+func EnrollMemberWithoutOnboarding(ctx context.Context, httpClient *http.Client, db *gorm.DB, interaction *slack.InteractionCallback) error {
+	// Start new span
+	tracer := otel.Tracer("")
+	ctx, span := tracer.Start(ctx, "enroll.member.no_onboarding")
+	defer span.End()
+
+	if interaction.Type != slack.InteractionTypeBlockActions {
+		return nil
+	}
+
+	span.SetAttributes(
+		attribute.String(attributes.SlackInteraction, string(interaction.Type)),
+		attribute.String(attributes.SlackActionID, string(interaction.ActionCallback.BlockActions[0].Type)),
+	)
+
+	// The ChannelID is stored in the "Opt In" button's value
+	channelID := interaction.ActionCallback.BlockActions[0].Value
+
+	// Mark the member as active by queuing an UPDATE_MEMBER job (default gender/
+	// connection mode are applied at member creation, so no profile data is required)
+	isActive := true
+	if err := QueueUpdateMemberJob(ctx, db, &UpdateMemberParams{
+		UserID:    interaction.User.ID,
+		ChannelID: channelID,
+		IsActive:  &isActive,
+	}); err != nil {
+		return errors.Wrap(err, "failed to add UPDATE_MEMBER job to the queue")
+	}
+
+	// Queue a CREATE_MATCH job for this new participant
+	if err := QueueCreateMatchJob(ctx, db, &CreateMatchParams{
+		ChannelID:   channelID,
+		Participant: interaction.User.ID,
+	}); err != nil {
+		return errors.Wrap(err, "failed to add CREATE_MATCH job to the queue")
+	}
+
+	// Overwrite the "Opt In" button in the original message
+	if err := respondGreetMemberConfirmation(ctx, httpClient, interaction.ResponseURL, interaction.Message.Blocks, interaction.Team.ID, interaction.APIAppID); err != nil {
+		return errors.Wrap(err, "failed to respond to GREET_MEMBER webhook")
 	}
 
 	return nil
