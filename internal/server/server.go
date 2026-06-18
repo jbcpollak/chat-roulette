@@ -36,29 +36,31 @@ const (
 
 // Server is the API server
 type Server struct {
-	cache           *ristretto.Cache
-	config          *config.Config
-	db              *gorm.DB
-	devMode         bool
-	httpClient      *http.Client
-	httpServer      *http.Server
-	idTokenVerifier *oidc.IDTokenVerifier
-	mux             *mux.Router
-	oauthConfig     *oauth2.Config
-	sessionStore    *sessions.CookieStore
-	slackBotUserID  string
-	slackClient     *slack.Client
+	cache                 *ristretto.Cache
+	config                *config.Config
+	db                    *gorm.DB
+	devMode               bool
+	disableOnboardingFlow bool
+	httpClient            *http.Client
+	httpServer            *http.Server
+	idTokenVerifier       *oidc.IDTokenVerifier
+	mux                   *mux.Router
+	oauthConfig           *oauth2.Config
+	sessionStore          *sessions.CookieStore
+	slackBotUserID        string
+	slackClient           *slack.Client
 }
 
 type ServerOptions struct {
-	Config         *config.Config
-	DB             *gorm.DB
-	DevMode        bool
-	HTTPClient     *http.Client
-	HTTPServer     *http.Server
-	SlackBotUserID string
-	SlackClient    *slack.Client
-	SessionsStore  *sessions.CookieStore
+	Config                *config.Config
+	DB                    *gorm.DB
+	DevMode               bool
+	DisableOnboardingFlow bool
+	HTTPClient            *http.Client
+	HTTPServer            *http.Server
+	SlackBotUserID        string
+	SlackClient           *slack.Client
+	SessionsStore         *sessions.CookieStore
 }
 
 // New creates a new API server
@@ -153,18 +155,19 @@ func New(ctx context.Context, logger hclog.Logger, c *config.Config) (*Server, e
 
 	// Construct the Server
 	s := &Server{
-		cache:           cache,
-		config:          c,
-		db:              db,
-		devMode:         c.Dev,
-		httpClient:      httpClient,
-		httpServer:      httpServer,
-		idTokenVerifier: verifier,
-		mux:             r,
-		oauthConfig:     oauthConfig,
-		sessionStore:    store,
-		slackBotUserID:  slackBotUserID,
-		slackClient:     slackClient,
+		cache:                 cache,
+		config:                c,
+		db:                    db,
+		devMode:               c.Dev,
+		disableOnboardingFlow: c.DisableOnboardingFlow,
+		httpClient:            httpClient,
+		httpServer:            httpServer,
+		idTokenVerifier:       verifier,
+		mux:                   r,
+		oauthConfig:           oauthConfig,
+		sessionStore:          store,
+		slackBotUserID:        slackBotUserID,
+		slackClient:           slackClient,
 	}
 
 	return s, nil
@@ -177,14 +180,15 @@ func NewTestServer(opts *ServerOptions) *Server {
 	}
 
 	s := &Server{
-		config:         opts.Config,
-		db:             opts.DB,
-		devMode:        opts.DevMode,
-		httpClient:     opts.HTTPClient,
-		httpServer:     opts.HTTPServer,
-		slackBotUserID: opts.SlackBotUserID,
-		slackClient:    opts.SlackClient,
-		sessionStore:   opts.SessionsStore,
+		config:                opts.Config,
+		db:                    opts.DB,
+		devMode:               opts.DevMode,
+		disableOnboardingFlow: opts.DisableOnboardingFlow,
+		httpClient:            opts.HTTPClient,
+		httpServer:            opts.HTTPServer,
+		slackBotUserID:        opts.SlackBotUserID,
+		slackClient:           opts.SlackClient,
+		sessionStore:          opts.SessionsStore,
 	}
 
 	return s
@@ -193,6 +197,12 @@ func NewTestServer(opts *ServerOptions) *Server {
 // IsDevMode returns true if the Server is running in Dev Mode
 func (s *Server) IsDevMode() bool {
 	return s.devMode
+}
+
+// IsOnboardingFlowDisabled returns true if the member onboarding questionnaire
+// should be skipped (DISABLE_ONBOARDING_FLOW).
+func (s *Server) IsOnboardingFlowDisabled() bool {
+	return s.disableOnboardingFlow
 }
 
 // GetDB retrieves the gorm DB

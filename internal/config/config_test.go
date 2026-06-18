@@ -66,3 +66,34 @@ func Test_Validate(t *testing.T) {
 		})
 	}
 }
+
+func Test_LoadConfig_DisableOnboardingFlow(t *testing.T) {
+	// setRequired sets the minimum env vars needed for LoadConfig to pass validation.
+	setRequired := func(t *testing.T) {
+		t.Setenv("BOT_AUTH_TOKEN", "xoxb-9876543210123-4567778889990-f0A2GclR80dgPZLTUEq5asHm")
+		t.Setenv("DATABASE_URL", "postgres://username:password@host:5432/database-name")
+		t.Setenv("DATABASE_ENCRYPTION_KEY", "01234abcde5678901234f62c898cdb592eb3166b56da733e8e798305b0ef6403")
+		t.Setenv("SERVER_CLIENT_ID", "2518545982190.4321012345789")
+		t.Setenv("SERVER_CLIENT_SECRET", "9f8e7dbc9a5ba2aa4522c7c8eb571f60")
+		t.Setenv("SERVER_REDIRECT_URL", "https://www.example.com/oidc/callback")
+		t.Setenv("SERVER_SECRET_KEY", "8c4faf836e29d282f2dc7ffdf4ef59c6081e2d8964ba0ac9cd4bc8800021300c")
+		t.Setenv("SERVER_SIGNING_SECRET", "2773fb7eb76c90f19c0e1504ae1eee4b")
+	}
+
+	t.Run("defaults to false", func(t *testing.T) {
+		setRequired(t)
+
+		conf, err := LoadConfig("")
+		assert.NoError(t, err)
+		assert.False(t, conf.DisableOnboardingFlow)
+	})
+
+	t.Run("enabled via DISABLE_ONBOARDING_FLOW env var", func(t *testing.T) {
+		setRequired(t)
+		t.Setenv("DISABLE_ONBOARDING_FLOW", "true")
+
+		conf, err := LoadConfig("")
+		assert.NoError(t, err)
+		assert.True(t, conf.DisableOnboardingFlow)
+	})
+}

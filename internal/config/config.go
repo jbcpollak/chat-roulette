@@ -25,6 +25,11 @@ type Config struct {
 	Worker   WorkerConfig
 	Tracing  TracingConfig
 	Dev      bool
+
+	// DisableOnboardingFlow skips the member onboarding questionnaire (location,
+	// timezone, gender, profile, Calendly). When true, clicking "Opt In" enrolls
+	// the member immediately with default settings. Env var: DISABLE_ONBOARDING_FLOW.
+	DisableOnboardingFlow bool `mapstructure:"disable_onboarding_flow"`
 }
 
 // DatabaseConfig stores the configuration for using the database
@@ -238,7 +243,8 @@ func newDefaultConfig() *Config {
 				MaxIdletime: DefaultDBMaxIdletime,
 			},
 		},
-		Dev: false,
+		Dev:                   false,
+		DisableOnboardingFlow: false,
 	}
 }
 

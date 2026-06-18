@@ -140,6 +140,67 @@ func (s *GreetMemberSuite) Test_GreetMemberJob() {
 	r.Contains(s.buffer.String(), "added new job to the database")
 }
 
+func (s *GreetMemberSuite) Test_EnrollMemberWithoutOnboarding() {
+	r := require.New(s.T())
+
+	userID := "U0123456789"
+	channelID := "C0123456789"
+
+	// Webhook server that receives the message overwriting the "Opt In" button
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var request *slack.WebhookMessage
+		err := json.NewDecoder(req.Body).Decode(&request)
+		r.NoError(err)
+		r.Len(request.Blocks.BlockSet, 8)
+		r.Contains(request.Blocks.BlockSet[6].(*slack.SectionBlock).Text.Text, "Thank you")
+		w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	// Original GREET_MEMBER message blocks (last block is the "Opt In" button, replaced)
+	msg := slack.NewBlockMessage(
+		slack.NewDividerBlock(),
+		slack.NewDividerBlock(),
+		slack.NewDividerBlock(),
+		slack.NewDividerBlock(),
+		slack.NewDividerBlock(),
+		slack.NewDividerBlock(),
+		slack.NewDividerBlock(),
+	)
+
+	interaction := &slack.InteractionCallback{
+		Type:        slack.InteractionTypeBlockActions,
+		APIAppID:    "A1234567890",
+		Team:        slack.Team{ID: "T1234567890"},
+		User:        slack.User{ID: userID},
+		ResponseURL: server.URL,
+		Message:     msg,
+		ActionCallback: slack.ActionCallbacks{
+			BlockActions: []*slack.BlockAction{
+				{ActionID: "GREET_MEMBER|confirm", Value: channelID, Type: "button"},
+			},
+		},
+	}
+
+	// Expect the UPDATE_MEMBER (mark active) job, then the CREATE_MATCH job
+	isActive := true
+	database.MockQueueJob(
+		s.mock,
+		&UpdateMemberParams{UserID: userID, ChannelID: channelID, IsActive: &isActive},
+		models.JobTypeUpdateMember.String(),
+		models.JobPriorityHigh,
+	)
+	database.MockQueueJob(
+		s.mock,
+		&CreateMatchParams{ChannelID: channelID, Participant: userID},
+		models.JobTypeCreateMatch.String(),
+		models.JobPriorityLow,
+	)
+
+	err := EnrollMemberWithoutOnboarding(s.ctx, server.Client(), s.db, interaction)
+	r.NoError(err)
+}
+
 func Test_GreetMember_suite(t *testing.T) {
 	suite.Run(t, new(GreetMemberSuite))
 }
