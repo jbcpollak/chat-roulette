@@ -1,0 +1,170 @@
+#cloud-config
+#
+# Container-Optimized OS user-data for the chat-roulette VM.
+# deploy.sh renders this template (substituting the __PLACEHOLDER__ tokens) and
+# attaches it as the instance's `user-data` metadata. COS re-applies user-data on
+# every boot, so rolling out a new image == update metadata + reset the instance.
+#
+# Placeholders substituted by deploy.sh:
+#   __PROJECT_ID__   GCP project id
+#   __REGION_HOST__  Artifact Registry host, e.g. us-central1-docker.pkg.dev
+#   __IMAGE__        fully-qualified app image (pinned by git SHA)
+#   __ICN__          Cloud SQL instance connection name (project:region:instance)
+#   __DOMAIN__       public hostname, e.g. chat.example.com
+#   __ACME_EMAIL__   contact email for Let's Encrypt
+#   __DB_USER__      Postgres role
+#   __DB_NAME__      Postgres database name
+#   __APP_EXTRA_ENV__ extra docker `-e` flags for the app (e.g. feature toggles)
+
+write_files:
+  # ---- Caddy reverse proxy config (mirror of deploy/gcp/Caddyfile) ----
+  - path: /etc/caddy/Caddyfile
+    permissions: "0644"
+    content: |
+      {
+        email __ACME_EMAIL__
+      }
+
+      __DOMAIN__ {
+        encode gzip
+        reverse_proxy chat-roulette:8080 {
+          health_uri /-/healthy
+          health_interval 30s
+        }
+      }
+
+  # ---- Secret fetcher: writes /run/chat-roulette/app.env from Secret Manager ----
+  - path: /etc/chat-roulette/fetch-secrets.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      get() { gcloud secrets versions access latest --secret="$1" --project=__PROJECT_ID__; }
+      DBPASS="$(get chat-roulette-db-password)"
+      umask 077
+      cat > /out/app.env <<EOF
+      BOT_AUTH_TOKEN=$(get chat-roulette-bot-auth-token)
+      DATABASE_ENCRYPTION_KEY=$(get chat-roulette-encryption-key)
+      SERVER_SECRET_KEY=$(get chat-roulette-server-secret-key)
+      SERVER_CLIENT_ID=$(get chat-roulette-client-id)
+      SERVER_CLIENT_SECRET=$(get chat-roulette-client-secret)
+      SERVER_SIGNING_SECRET=$(get chat-roulette-signing-secret)
+      SERVER_REDIRECT_URL=https://__DOMAIN__/oidc/callback
+      DATABASE_URL=postgres://__DB_USER__:${DBPASS}@cloudsql-proxy:5432/__DB_NAME__?sslmode=disable
+      EOF
+      echo "wrote /out/app.env"
+
+  # ---- Artifact Registry login: mint a short-lived token from the VM service
+  #      account and docker-login before pulling the private app image. Avoids
+  #      depending on docker-credential-gcr / $HOME being set in the unit. ----
+  - path: /etc/chat-roulette/ar-login.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      TOKEN="$(docker run --rm gcr.io/google.com/cloudsdktool/cloud-sdk:slim gcloud auth print-access-token)"
+      echo "$TOKEN" | docker --config "${DOCKER_CONFIG:-/etc/chat-roulette/docker}" \
+        login -u oauth2accesstoken --password-stdin "https://__REGION_HOST__"
+
+  # ---- systemd units ----
+  - path: /etc/systemd/system/chat-roulette-net.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Create the docker network for chat-roulette
+      After=docker.service
+      Requires=docker.service
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/sh -c '/usr/bin/docker network inspect cr >/dev/null 2>&1 || /usr/bin/docker network create cr'
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/chat-roulette-secrets.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Fetch chat-roulette secrets into /run/chat-roulette/app.env
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStartPre=/bin/mkdir -p /run/chat-roulette
+      ExecStart=/usr/bin/docker run --rm \
+        -v /run/chat-roulette:/out \
+        -v /etc/chat-roulette:/scripts:ro \
+        gcr.io/google.com/cloudsdktool/cloud-sdk:slim \
+        /bin/bash /scripts/fetch-secrets.sh
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/cloudsql-proxy.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Cloud SQL Auth Proxy
+      After=chat-roulette-net.service network-online.target
+      Requires=chat-roulette-net.service
+      Wants=network-online.target
+      [Service]
+      Restart=always
+      RestartSec=10
+      ExecStartPre=-/usr/bin/docker rm -f cloudsql-proxy
+      ExecStartPre=/usr/bin/docker pull gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+      ExecStart=/usr/bin/docker run --rm --name cloudsql-proxy --network cr \
+        gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1 \
+        --address 0.0.0.0 --port 5432 __ICN__
+      ExecStop=/usr/bin/docker stop cloudsql-proxy
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/chat-roulette.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Chat Roulette for Slack
+      After=cloudsql-proxy.service chat-roulette-secrets.service
+      Requires=cloudsql-proxy.service chat-roulette-secrets.service
+      [Service]
+      Restart=always
+      RestartSec=10
+      Environment=DOCKER_CONFIG=/etc/chat-roulette/docker
+      ExecStartPre=-/usr/bin/docker rm -f chat-roulette
+      ExecStartPre=/bin/mkdir -p /etc/chat-roulette/docker
+      ExecStartPre=/bin/bash /etc/chat-roulette/ar-login.sh
+      ExecStartPre=/usr/bin/docker pull __IMAGE__
+      ExecStart=/usr/bin/docker run --rm --name chat-roulette --network cr \
+        --env-file /run/chat-roulette/app.env \
+        __APP_EXTRA_ENV__ \
+        __IMAGE__
+      ExecStop=/usr/bin/docker stop chat-roulette
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/caddy.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Caddy reverse proxy (automatic TLS)
+      After=chat-roulette.service chat-roulette-net.service
+      Requires=chat-roulette-net.service
+      [Service]
+      Restart=always
+      RestartSec=10
+      ExecStartPre=-/usr/bin/docker rm -f caddy
+      ExecStartPre=/usr/bin/docker pull caddy:2
+      ExecStart=/usr/bin/docker run --rm --name caddy --network cr \
+        -p 80:80 -p 443:443 -p 443:443/udp \
+        -v /etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro \
+        -v caddy_data:/data -v caddy_config:/config \
+        caddy:2
+      ExecStop=/usr/bin/docker stop caddy
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable chat-roulette-net.service chat-roulette-secrets.service cloudsql-proxy.service chat-roulette.service caddy.service
+  - systemctl start chat-roulette.service caddy.service
